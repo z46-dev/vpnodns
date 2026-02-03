@@ -116,3 +116,26 @@ func IsMulticast(pkt []byte) (multicast bool) {
 		return false
 	}
 }
+
+// PacketSrcDst extracts source and destination IPs from IPv4/IPv6 packets.
+// ok is false when the packet is truncated or not an IP packet.
+func PacketSrcDst(pkt []byte) (src net.IP, dst net.IP, ok bool) {
+	if len(pkt) == 0 {
+		return nil, nil, false
+	}
+
+	switch pkt[0] >> 4 {
+	case 4:
+		if len(pkt) < 20 {
+			return nil, nil, false
+		}
+		return net.IP(pkt[12:16]).To4(), net.IP(pkt[16:20]).To4(), true
+	case 6:
+		if len(pkt) < 40 {
+			return nil, nil, false
+		}
+		return append(net.IP(nil), pkt[8:24]...), append(net.IP(nil), pkt[24:40]...), true
+	default:
+		return nil, nil, false
+	}
+}

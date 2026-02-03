@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"strings"
+	"time"
 )
 
 type serverConfig struct {
@@ -13,6 +14,10 @@ type serverConfig struct {
 	ifaceMTU   int
 	natIface   string
 	routes     []string
+	username   string
+	password   string
+	sessionTTL time.Duration
+	queueSize  int
 }
 
 func parseServerConfig() (cfg serverConfig) {
@@ -26,6 +31,10 @@ func parseServerConfig() (cfg serverConfig) {
 	var ifaceCIDR *string = flag.String("iface-cidr", "10.44.0.1/30", "CIDR to assign to server TUN interface")
 	var ifaceMTU *int = flag.Int("iface-mtu", 1400, "MTU for the server TUN interface")
 	var natIface *string = flag.String("nat-iface", "", "Uplink interface to NAT client traffic through (default: auto-detect)")
+	var username *string = flag.String("username", "demo", "Required client username")
+	var password *string = flag.String("password", "demo", "Required client password")
+	var sessionTTL *time.Duration = flag.Duration("session-ttl", 2*time.Minute, "Expire inactive client sessions after this duration")
+	var queueSize *int = flag.Int("queue-size", 128, "Per-session outbound packet queue size")
 
 	flag.Var(&routeList, "route", "Route to add via the server TUN (repeatable, e.g. -route 10.0.0.0/24)")
 	flag.Parse()
@@ -38,6 +47,10 @@ func parseServerConfig() (cfg serverConfig) {
 		ifaceMTU:   *ifaceMTU,
 		natIface:   *natIface,
 		routes:     routeList,
+		username:   *username,
+		password:   *password,
+		sessionTTL: *sessionTTL,
+		queueSize:  *queueSize,
 	}
 
 	return

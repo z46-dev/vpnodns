@@ -9,9 +9,8 @@ DNS packets carry VPN traffic by encoding payloads into DNS question names (clie
 - Fragmentation keeps encoded names ≤255 bytes on the fly. Responses use EDNS0 with a 4096-byte UDP size.
 
 ## Current limitations
-- No encryption or integrity protection.
-- Username/password is not enforced; the server always accepts.
-- Designed for a single client path; the server queue is shared and there is no per-client isolation.
+- Handshake metadata is still observable on the wire (not full TLS).
+- Multi-client support is still basic and expects each client to use its own tunnel IP.
 
 ## Usage
 Build or run the packages so both main and config files are included.
@@ -25,6 +24,39 @@ Client (run as root to create TUN):
 ```bash
 go run ./client -server 10.255.37.136:53535
 ```
+
+Useful flags:
+- Server auth + sessions: `-username`, `-password`, `-session-ttl`, `-queue-size`
+- Client responsiveness: `-poll-min`, `-poll-max`
+
+Server and client usernames/passwords must match.
+
+## Improvements included
+
+- Handshake credentials are now enforced on server (`ClientHello` can be rejected).
+- Server keeps per-session outbound queues and routes packets to the matching session by tunnel destination IP.
+- Server can piggyback queued `ServerData` on normal ACK responses, reducing pure-poll overhead.
+- Client polling now uses adaptive backoff (`poll-min`..`poll-max`) for better idle CPU/traffic behavior.
+- Added session key derivation and AES-GCM encryption for `ClientData`/`ServerData` payloads.
+- Added handshake proof verification (client and server proofs + finished proof).
+- Added replay/out-of-order protection window on server message sequences (duplicates are dropped).
+
+## Systemd installer
+
+Install helper script and unit templates are included:
+
+```bash
+sudo ./scripts/install_systemd.sh
+```
+
+Files:
+- `systemd/vpnodns-server.service`
+- `systemd/vpnodns-client.service`
+- `scripts/install_systemd.sh`
+
+You can override runtime flags in:
+- `/etc/default/vpnodns-server`
+- `/etc/default/vpnodns-client`
 
 ## Future goals
 

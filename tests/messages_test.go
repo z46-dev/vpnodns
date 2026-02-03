@@ -215,3 +215,38 @@ func TestIsMulticastAndSummary(t *testing.T) {
 	assert.False(t, shared.IsMulticast(v4unicast))
 	assert.NotEmpty(t, shared.PacketSummary(v4unicast))
 }
+
+func TestPacketSrcDst(t *testing.T) {
+	var v4 []byte = []byte{
+		0x45, 0x00, 0x00, 0x1c, 0x00, 0x01, 0x00, 0x00, 0x06, 0x11, 0x00, 0x00,
+		203, 0, 113, 5,
+		198, 51, 100, 9,
+		0x00, 0x50, 0x01, 0xbb,
+	}
+
+	src, dst, ok := shared.PacketSrcDst(v4)
+	assert.True(t, ok)
+	assert.Equal(t, "203.0.113.5", src.String())
+	assert.Equal(t, "198.51.100.9", dst.String())
+
+	_, _, ok = shared.PacketSrcDst([]byte{0x45, 0x00})
+	assert.False(t, ok)
+}
+
+func TestPayloadEncryptionRoundTrip(t *testing.T) {
+	msg := shared.Message{
+		Type:      shared.MessageTypeClientData,
+		SessionID: 7,
+		Sequence:  9,
+		Payload:   []byte("secret-payload"),
+	}
+	key := []byte("01234567890123456789012345678901")
+
+	encrypted, err := shared.EncryptMessagePayload(msg, key, shared.TrafficClientToServer)
+	assert.NoError(t, err)
+	assert.NotEqual(t, msg.Payload, encrypted.Payload)
+
+	decrypted, err := shared.DecryptMessagePayload(encrypted, key, shared.TrafficClientToServer)
+	assert.NoError(t, err)
+	assert.Equal(t, msg.Payload, decrypted.Payload)
+}

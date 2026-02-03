@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -72,16 +75,18 @@ func runServer(cfg serverConfig) (err error) {
 	}
 	tun.LogNATState(log, uplink, tunIf.Name())
 
-	var outbound chan []byte = make(chan []byte, 64)
+	var sessions *sessionManager = newSessionManager(cfg.queueSize, cfg.sessionTTL)
+	sessions.StartJanitor(ctx)
+
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		queueServerTraffic(tunIf, outbound)
+		queueServerTraffic(tunIf, sessions)
 	})
 
 	var assembler *shared.Reassembler = shared.NewReassembler()
 	var mux *dns.ServeMux = dns.NewServeMux()
 	mux.HandleFunc(".", func(w dns.ResponseWriter, r *dns.Msg) {
-		if err := handleQuery(w, r, cfg.domain, assembler, tunIf, outbound); err != nil {
+		if err := handleQuery(w, r, cfg, assembler, tunIf, sessions); err != nil {
 			log.Warningf("query error: %v\n", err)
 			dns.HandleFailed(w, r)
 		}
@@ -111,10 +116,10 @@ func runServer(cfg serverConfig) (err error) {
 	return
 }
 
-func handleQuery(w dns.ResponseWriter, r *dns.Msg, domain string, assembler *shared.Reassembler, tunIf *tun.Interface, outbound chan []byte) (err error) {
+func handleQuery(w dns.ResponseWriter, r *dns.Msg, cfg serverConfig, assembler *shared.Reassembler, tunIf *tun.Interface, sessions *sessionManager) (err error) {
 	var msg shared.Message
 
-	if msg, err = shared.DecodeQuery(r, domain); err != nil {
+	if msg, err = shared.DecodeQuery(r, cfg.domain); err != nil {
 		return
 	}
 
@@ -149,12 +154,32 @@ func handleQuery(w dns.ResponseWriter, r *dns.Msg, domain string, assembler *sha
 		}
 
 		log.Basicf("client hello user=%s suites=%v\n", clientHello.Username, clientHello.CipherSuites)
+		var accepted bool = validateCredentials(cfg, clientHello)
+		var serverNonce []byte
+		if serverNonce, err = randomBytes(32); err != nil {
+			return
+		}
+
+		if accepted {
+			sessions.Register(msg.SessionID)
+			if !sessions.AcceptClientSequence(msg.SessionID, msg.Sequence) {
+				err = fmt.Errorf("duplicate handshake seq=%d", msg.Sequence)
+				return
+			}
+			var sessionKey []byte
+			if sessionKey, err = shared.DeriveSessionKey(cfg.password, msg.SessionID, clientHello.Nonce, serverNonce); err != nil {
+				return
+			}
+			sessions.SetSessionKey(msg.SessionID, sessionKey)
+		}
 
 		var respMsg shared.Message
 		respMsg, err = shared.ServerHello{
-			Accepted:          true,
+			Accepted:          accepted,
 			SelectedCipher:    chooseCipher(clientHello.CipherSuites),
-			Nonce:             []byte("server-nonce"),
+			Nonce:             serverNonce,
+			Proof:             shared.ComputeServerHelloProof(cfg.password, msg.SessionID, clientHello.Nonce, serverNonce),
+			RejectionReason:   rejectionReason(accepted),
 			SupportsFragments: true,
 		}.ToMessage(msg.SessionID, msg.Sequence+1)
 
@@ -172,71 +197,77 @@ func handleQuery(w dns.ResponseWriter, r *dns.Msg, domain string, assembler *sha
 		return
 
 	case shared.MessageTypeFinished:
-		var respMsg shared.Message = shared.Message{Type: shared.MessageTypeServerAck, SessionID: msg.SessionID, Sequence: msg.Sequence + 1}
-		var resp *dns.Msg
-
-		if resp, err = shared.EncodeTXTResponse(respMsg, r); err != nil {
+		if !sessions.AcceptClientSequence(msg.SessionID, msg.Sequence) {
+			err = fmt.Errorf("replayed/out-of-window seq=%d for session=%d", msg.Sequence, msg.SessionID)
+			return
+		}
+		var key []byte
+		var ok bool
+		if key, ok = sessions.SessionKey(msg.SessionID); !ok {
+			err = fmt.Errorf("missing session key for %d", msg.SessionID)
 			return
 		}
 
-		setResponseEDNS(resp, r)
-		err = w.WriteMsg(resp)
-		return
+		var finished shared.Finished
+		if finished, err = shared.ParseFinished(msg); err != nil {
+			return
+		}
+		if !shared.VerifyFinished(finished, key, msg.SessionID) {
+			err = fmt.Errorf("invalid finished proof")
+			return
+		}
+		sessions.MarkEstablished(msg.SessionID)
+
+		var respMsg shared.Message = shared.Message{Type: shared.MessageTypeServerAck, SessionID: msg.SessionID, Sequence: msg.Sequence + 1}
+		return writeResponseMessage(w, r, respMsg)
 
 	case shared.MessageTypeClientData:
+		if !sessions.AcceptClientSequence(msg.SessionID, msg.Sequence) {
+			err = fmt.Errorf("replayed/out-of-window seq=%d for session=%d", msg.Sequence, msg.SessionID)
+			return
+		}
+		if !sessions.IsEstablished(msg.SessionID) {
+			err = fmt.Errorf("client data before handshake completion")
+			return
+		}
+
+		var sessionKey []byte
+		var ok bool
+		if sessionKey, ok = sessions.SessionKey(msg.SessionID); !ok {
+			err = fmt.Errorf("missing session key for %d", msg.SessionID)
+			return
+		}
+		if msg, err = shared.DecryptMessagePayload(msg, sessionKey, shared.TrafficClientToServer); err != nil {
+			return
+		}
+
 		if shared.IsMulticast(msg.Payload) {
 			err = writeAck(w, r, msg)
 			return
 		}
+
+		var srcIP net.IP
+		srcIP, _, _ = shared.PacketSrcDst(msg.Payload)
+		sessions.BindClientIP(msg.SessionID, srcIP)
+
 		if _, err = tunIf.Write(msg.Payload); err != nil {
 			err = fmt.Errorf("write tun: %w", err)
 			return
 		}
 
 		log.Basicf("server rx %d bytes (%s)\n", len(msg.Payload), shared.PacketSummary(msg.Payload))
-		var respMsg shared.Message = shared.Message{Type: shared.MessageTypeServerAck, SessionID: msg.SessionID, Sequence: msg.Sequence + 1}
-		var resp *dns.Msg
-		if resp, err = shared.EncodeTXTResponse(respMsg, r); err != nil {
-			return
-		}
-
-		setResponseEDNS(resp, r)
-		err = w.WriteMsg(resp)
-		return
+		return writeDataOrAck(w, r, msg, sessions)
 
 	case shared.MessageTypeClientPoll:
-		select {
-		case pkt := <-outbound:
-			if len(pkt) == 0 {
-				err = writeAck(w, r, msg)
-				return
-			}
-
-			if shared.IsMulticast(pkt) {
-				err = writeAck(w, r, msg)
-				return
-			}
-
-			var respMsg shared.Message = shared.Message{
-				Type:      shared.MessageTypeServerData,
-				SessionID: msg.SessionID,
-				Sequence:  msg.Sequence + 1,
-				Payload:   pkt,
-			}
-
-			log.Basicf("server poll seq=%d -> tx %d bytes to client (%s)\n", msg.Sequence, len(pkt), shared.PacketSummary(pkt))
-			var resp *dns.Msg
-			if resp, err = shared.EncodeTXTResponse(respMsg, r); err != nil {
-				return
-			}
-
-			setResponseEDNS(resp, r)
-			err = w.WriteMsg(resp)
-			return
-		default:
-			err = writeAck(w, r, msg)
+		if !sessions.AcceptClientSequence(msg.SessionID, msg.Sequence) {
+			err = fmt.Errorf("replayed/out-of-window seq=%d for session=%d", msg.Sequence, msg.SessionID)
 			return
 		}
+		if !sessions.IsEstablished(msg.SessionID) {
+			err = fmt.Errorf("client poll before handshake completion")
+			return
+		}
+		return writeDataOrAck(w, r, msg, sessions)
 
 	default:
 		err = fmt.Errorf("unhandled message type %d", msg.Type)
@@ -280,7 +311,71 @@ func writeAck(w dns.ResponseWriter, req *dns.Msg, msg shared.Message) (err error
 	return
 }
 
-func queueServerTraffic(tunIf *tun.Interface, outbound chan []byte) {
+func writeDataOrAck(w dns.ResponseWriter, req *dns.Msg, msg shared.Message, sessions *sessionManager) (err error) {
+	var (
+		respMsg shared.Message
+		pkt     []byte
+		ok      bool
+	)
+
+	if pkt, ok = sessions.Dequeue(msg.SessionID); ok && len(pkt) > 0 && !shared.IsMulticast(pkt) {
+		respMsg = shared.Message{
+			Type:      shared.MessageTypeServerData,
+			SessionID: msg.SessionID,
+			Sequence:  msg.Sequence + 1,
+			Payload:   pkt,
+		}
+		var sessionKey []byte
+		if sessionKey, ok = sessions.SessionKey(msg.SessionID); ok {
+			if respMsg, err = shared.EncryptMessagePayload(respMsg, sessionKey, shared.TrafficServerToClient); err != nil {
+				return
+			}
+		}
+		log.Basicf("server tx queued packet seq=%d len=%d (%s)\n", msg.Sequence, len(pkt), shared.PacketSummary(pkt))
+	} else {
+		respMsg = shared.Message{
+			Type:      shared.MessageTypeServerAck,
+			SessionID: msg.SessionID,
+			Sequence:  msg.Sequence + 1,
+		}
+	}
+
+	return writeResponseMessage(w, req, respMsg)
+}
+
+func writeResponseMessage(w dns.ResponseWriter, req *dns.Msg, msg shared.Message) (err error) {
+	var resp *dns.Msg
+	if resp, err = shared.EncodeTXTResponse(msg, req); err != nil {
+		return
+	}
+
+	setResponseEDNS(resp, req)
+	err = w.WriteMsg(resp)
+	return
+}
+
+func validateCredentials(cfg serverConfig, hello shared.ClientHello) (accepted bool) {
+	var expectedUser string = strings.TrimSpace(cfg.username)
+	var expectedPass string = strings.TrimSpace(cfg.password)
+	if expectedUser == "" && expectedPass == "" {
+		return true
+	}
+
+	if hello.Username != expectedUser {
+		return false
+	}
+
+	return shared.VerifyClientHelloProof(hello, expectedPass)
+}
+
+func rejectionReason(accepted bool) (reason string) {
+	if accepted {
+		return ""
+	}
+	return "invalid credentials"
+}
+
+func queueServerTraffic(tunIf *tun.Interface, sessions *sessionManager) {
 	var buf []byte = make([]byte, 2000)
 	for {
 		var (
@@ -299,8 +394,11 @@ func queueServerTraffic(tunIf *tun.Interface, outbound chan []byte) {
 			continue
 		}
 
-		enqueueOutbound(outbound, pkt)
-		log.Basicf("server observed inbound for client (%s)\n", shared.PacketSummary(pkt))
+		if sessions.EnqueueByPacket(pkt) {
+			log.Basicf("server queued %d bytes for client (%s)\n", len(pkt), shared.PacketSummary(pkt))
+		} else {
+			log.Warningf("server drop outbound (no matching session) %s\n", shared.PacketSummary(pkt))
+		}
 	}
 }
 
@@ -314,20 +412,16 @@ func setResponseEDNS(resp, req *dns.Msg) {
 	resp.SetEdns0(size, false)
 }
 
-func enqueueOutbound(outbound chan []byte, pkt []byte) {
-	select {
-	case outbound <- pkt:
-		log.Basicf("server queued %d bytes for client (%s)\n", len(pkt), shared.PacketSummary(pkt))
-	default:
-		select {
-		case <-outbound:
-		default:
-		}
-		select {
-		case outbound <- pkt:
-			log.Basicf("server queued %d bytes for client (%s)\n", len(pkt), shared.PacketSummary(pkt))
-		default:
-			log.Warningf("server drop outbound (queue full) %s\n", shared.PacketSummary(pkt))
-		}
+func randomBytes(length int) (data []byte, err error) {
+	if length <= 0 {
+		return []byte{}, nil
 	}
+
+	data = make([]byte, length)
+	if _, err = rand.Read(data); err != nil {
+		err = fmt.Errorf("generate random bytes: %w", err)
+		return
+	}
+
+	return
 }

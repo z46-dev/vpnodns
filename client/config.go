@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"strings"
+	"time"
 )
 
 type clientConfig struct {
@@ -14,6 +15,8 @@ type clientConfig struct {
 	routes     []string
 	username   string
 	password   string
+	pollMin    time.Duration
+	pollMax    time.Duration
 }
 
 func parseClientConfig() (cfg clientConfig) {
@@ -28,6 +31,8 @@ func parseClientConfig() (cfg clientConfig) {
 	var ifaceMTU *int = flag.Int("iface-mtu", 1400, "MTU for the client TUN interface")
 	var username *string = flag.String("username", "demo", "Username for handshake")
 	var password *string = flag.String("password", "demo", "Password for handshake")
+	var pollMin *time.Duration = flag.Duration("poll-min", 75*time.Millisecond, "Minimum poll interval while data is active")
+	var pollMax *time.Duration = flag.Duration("poll-max", 750*time.Millisecond, "Maximum poll interval while idle")
 
 	flag.Var(&routeList, "route", "Route to add via the client TUN (repeatable, e.g. -route 10.0.0.0/24)")
 	flag.Parse()
@@ -41,6 +46,8 @@ func parseClientConfig() (cfg clientConfig) {
 		routes:     routeList,
 		username:   *username,
 		password:   *password,
+		pollMin:    *pollMin,
+		pollMax:    *pollMax,
 	}
 
 	return
