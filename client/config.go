@@ -21,13 +21,15 @@ func parseClientConfig() (cfg clientConfig) {
 		routeList routeFlag
 	)
 
-	var serverAddr *string = flag.String("server", "127.0.0.1:53535", "DNS server address (host:port)")
-	var domain *string = flag.String("domain", "vpn.internal", "Authoritative domain handled by the VPN server")
-	var ifaceName *string = flag.String("iface", "dns1", "Name for the client TUN interface")
-	var ifaceCIDR *string = flag.String("iface-cidr", "10.44.0.2/30", "CIDR to assign to client TUN interface")
-	var ifaceMTU *int = flag.Int("iface-mtu", 1400, "MTU for the client TUN interface")
-	var username *string = flag.String("username", "demo", "Username for handshake")
-	var password *string = flag.String("password", "demo", "Password for handshake")
+	var (
+		serverAddr *string = flag.String("server", "127.0.0.1:53535", "DNS server address (host:port)")
+		domain     *string = flag.String("domain", "vpn.internal", "Authoritative domain handled by the VPN server")
+		ifaceName  *string = flag.String("iface", "dns1", "Name for the client TUN interface")
+		ifaceCIDR  *string = flag.String("iface-cidr", "10.44.0.2/30", "CIDR to assign to client TUN interface")
+		ifaceMTU   *int    = flag.Int("iface-mtu", 1400, "MTU for the client TUN interface")
+		username   *string = flag.String("username", "demo", "Username for handshake")
+		password   *string = flag.String("password", "demo", "Password for handshake")
+	)
 
 	flag.Var(&routeList, "route", "Route to add via the client TUN (repeatable, e.g. -route 10.0.0.0/24)")
 	flag.Parse()
