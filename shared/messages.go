@@ -3,6 +3,7 @@ package shared
 import (
 	"encoding/binary"
 	"errors"
+	"math"
 )
 
 // MessageType identifies the role of a message flowing through DNS.
@@ -20,26 +21,24 @@ const (
 
 const (
 	messageHeaderSize = 15 // 1(type) + 4(session) + 4(seq) + 2(totalParts) + 2(part) + 2(payloadLen)
-	MaxPayloadSize    = 1<<16 - 1
+	MaxPayloadSize    = math.MaxUint16
 )
 
 var (
-	ErrPayloadTooLarge   = errors.New("payload too large")
-	ErrInvalidMessage    = errors.New("invalid message")
-	ErrUnsupportedType   = errors.New("unsupported message type")
-	ErrIncompletePayload = errors.New("incomplete payload")
-	ErrNameTooLong       = errors.New("encoded name exceeds DNS limits")
+	ErrPayloadTooLarge   error = errors.New("payload too large")
+	ErrInvalidMessage    error = errors.New("invalid message")
+	ErrUnsupportedType   error = errors.New("unsupported message type")
+	ErrIncompletePayload error = errors.New("incomplete payload")
+	ErrNameTooLong       error = errors.New("encoded name exceeds DNS limits")
 )
 
 // Message is the fundamental wire unit exchanged between client and server.
 // When payloads exceed DNS limits, they are split into numbered parts.
 type Message struct {
-	Type       MessageType
-	SessionID  uint32
-	Sequence   uint32
-	TotalParts uint16
-	Part       uint16
-	Payload    []byte
+	Type                MessageType
+	SessionID, Sequence uint32
+	TotalParts, Part    uint16
+	Payload             []byte
 }
 
 // MarshalBinary encodes the message into a deterministic binary form suitable for DNS transport.
@@ -82,7 +81,7 @@ func UnmarshalMessage(data []byte) (msg Message, err error) {
 		Part:       binary.BigEndian.Uint16(data[11:]),
 		Payload:    make([]byte, payloadLen),
 	}
-	copy(msg.Payload, data[messageHeaderSize:messageHeaderSize+payloadLen])
 
+	copy(msg.Payload, data[messageHeaderSize:messageHeaderSize+payloadLen])
 	return
 }

@@ -8,13 +8,9 @@ import (
 type (
 	routeFlag    []string
 	serverConfig struct {
-		listenAddr string
-		domain     string
-		ifaceName  string
-		ifaceCIDR  string
-		ifaceMTU   int
-		natIface   string
-		routes     []string
+		listenAddr, domain, ifaceName, ifaceCIDR, natIface string
+		ifaceMTU                                           int
+		routes                                             []string
 	}
 )
 

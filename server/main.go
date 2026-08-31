@@ -336,8 +336,13 @@ func queueServerTraffic(tunIf *tun.Interface, outbound chan []byte) {
 
 func setResponseEDNS(resp, req *dns.Msg) {
 	const serverCap = 4096
-	var size uint16 = uint16(serverCap)
-	if opt := req.IsEdns0(); opt != nil && opt.UDPSize() > 0 && opt.UDPSize() < size {
+
+	var (
+		size uint16 = uint16(serverCap)
+		opt  *dns.OPT
+	)
+
+	if opt = req.IsEdns0(); opt != nil && opt.UDPSize() > 0 && opt.UDPSize() < size {
 		size = opt.UDPSize()
 	}
 
@@ -353,6 +358,7 @@ func enqueueOutbound(outbound chan []byte, pkt []byte) {
 		case <-outbound:
 		default:
 		}
+
 		select {
 		case outbound <- pkt:
 			log.Basicf("server queued %d bytes for client (%s)\n", len(pkt), shared.PacketSummary(pkt))

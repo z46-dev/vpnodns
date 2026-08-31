@@ -11,16 +11,15 @@ import (
 )
 
 func TestMessageMarshalRoundTrip(t *testing.T) {
-	var orig shared.Message = shared.Message{
-		Type:       shared.MessageTypeClientData,
-		SessionID:  0xdeadbeef,
-		Sequence:   42,
-		TotalParts: 3,
-		Part:       1,
-		Payload:    bytes.Repeat([]byte{0xab, 0xcd}, 100),
-	}
-
 	var (
+		orig shared.Message = shared.Message{
+			Type:       shared.MessageTypeClientData,
+			SessionID:  0xDEADBEEF,
+			Sequence:   42,
+			TotalParts: 3,
+			Part:       1,
+			Payload:    bytes.Repeat([]byte{0xab, 0xcd}, 100),
+		}
 		wire []byte
 		err  error
 	)
@@ -41,23 +40,26 @@ func TestMessageMarshalRoundTrip(t *testing.T) {
 }
 
 func TestMarshalRejectsOversize(t *testing.T) {
-	var msg shared.Message = shared.Message{
-		Type:    shared.MessageTypeClientData,
-		Payload: bytes.Repeat([]byte("z"), shared.MaxPayloadSize+1),
-	}
-	_, err := msg.MarshalBinary()
+	var (
+		msg shared.Message = shared.Message{
+			Type:    shared.MessageTypeClientData,
+			Payload: bytes.Repeat([]byte("z"), shared.MaxPayloadSize+1),
+		}
+		err error
+	)
+
+	_, err = msg.MarshalBinary()
 	assert.Error(t, err)
 }
 
 func TestDNSQueryRoundTrip(t *testing.T) {
-	var orig shared.Message = shared.Message{
-		Type:      shared.MessageTypeClientPoll,
-		SessionID: 0x12345678,
-		Sequence:  7,
-		Payload:   []byte("hello-world"),
-	}
-
 	var (
+		orig shared.Message = shared.Message{
+			Type:      shared.MessageTypeClientPoll,
+			SessionID: 0x12345678,
+			Sequence:  7,
+			Payload:   []byte("hello-world"),
+		}
 		query   *dns.Msg
 		err     error
 		decoded shared.Message
@@ -76,18 +78,16 @@ func TestDNSQueryRoundTrip(t *testing.T) {
 }
 
 func TestTXTResponseRoundTrip(t *testing.T) {
-	var orig shared.Message = shared.Message{
-		Type:      shared.MessageTypeServerData,
-		SessionID: 0xbeadfeed,
-		Sequence:  10,
-		Payload:   []byte("response"),
-	}
-
 	var (
-		req     *dns.Msg
-		respMsg *dns.Msg
-		err     error
-		decoded shared.Message
+		orig shared.Message = shared.Message{
+			Type:      shared.MessageTypeServerData,
+			SessionID: 0xBEADFEED,
+			Sequence:  10,
+			Payload:   []byte("response"),
+		}
+		req, respMsg *dns.Msg
+		err          error
+		decoded      shared.Message
 	)
 
 	req, err = shared.EncodeQuery(orig, "vpn.test")
@@ -104,14 +104,13 @@ func TestTXTResponseRoundTrip(t *testing.T) {
 }
 
 func TestDNSQueryFragmentationRoundTrip(t *testing.T) {
-	var orig shared.Message = shared.Message{
-		Type:      shared.MessageTypeClientPoll,
-		SessionID: 0x87654321,
-		Sequence:  9,
-		Payload:   bytes.Repeat([]byte("fragment-me"), 150),
-	}
-
 	var (
+		orig shared.Message = shared.Message{
+			Type:      shared.MessageTypeClientPoll,
+			SessionID: 0x87654321,
+			Sequence:  9,
+			Payload:   bytes.Repeat([]byte("fragment-me"), 150),
+		}
 		fragments []shared.Message
 		err       error
 	)
@@ -126,8 +125,10 @@ func TestDNSQueryFragmentationRoundTrip(t *testing.T) {
 	)
 
 	for idx := 0; idx < len(fragments); idx++ {
-		var part shared.Message = fragments[idx]
-		var query *dns.Msg
+		var (
+			part  shared.Message = fragments[idx]
+			query *dns.Msg
+		)
 
 		query, err = shared.EncodeQuery(part, "vpn.test")
 		assert.NoError(t, err)
@@ -156,37 +157,42 @@ func TestDNSQueryFragmentationRoundTrip(t *testing.T) {
 }
 
 func TestEncodeQueryRejectsOversize(t *testing.T) {
-	var msg shared.Message = shared.Message{
-		Type:      shared.MessageTypeClientPoll,
-		SessionID: 1,
-		Sequence:  1,
-		Payload:   bytes.Repeat([]byte("x"), shared.MaxQueryPayload("vpn.test")+1),
-	}
-	_, err := shared.EncodeQuery(msg, "vpn.test")
+	var (
+		msg shared.Message = shared.Message{
+			Type:      shared.MessageTypeClientPoll,
+			SessionID: 1,
+			Sequence:  1,
+			Payload:   bytes.Repeat([]byte("x"), shared.MaxQueryPayload("vpn.test")+1),
+		}
+		err error
+	)
+
+	_, err = shared.EncodeQuery(msg, "vpn.test")
 	assert.Error(t, err)
 }
 
 func TestReassemblerMismatch(t *testing.T) {
-	var assembler *shared.Reassembler = shared.NewReassembler()
+	var (
+		assembler *shared.Reassembler = shared.NewReassembler()
+		first     shared.Message      = shared.Message{
+			Type:       shared.MessageTypeClientData,
+			SessionID:  1,
+			Sequence:   1,
+			TotalParts: 2,
+			Part:       0,
+			Payload:    []byte("hello"),
+		}
+		second shared.Message = shared.Message{
+			Type:       shared.MessageTypeClientPoll,
+			SessionID:  1,
+			Sequence:   1,
+			TotalParts: 3,
+			Part:       1,
+			Payload:    []byte("bad"),
+		}
+		err error
+	)
 
-	var first shared.Message = shared.Message{
-		Type:       shared.MessageTypeClientData,
-		SessionID:  1,
-		Sequence:   1,
-		TotalParts: 2,
-		Part:       0,
-		Payload:    []byte("hello"),
-	}
-	var second shared.Message = shared.Message{
-		Type:       shared.MessageTypeClientPoll,
-		SessionID:  1,
-		Sequence:   1,
-		TotalParts: 3,
-		Part:       1,
-		Payload:    []byte("bad"),
-	}
-
-	var err error
 	_, _, err = assembler.Add(first)
 	assert.NoError(t, err)
 
@@ -201,6 +207,7 @@ func TestIsMulticastAndSummary(t *testing.T) {
 		224, 0, 0, 1,
 		0x00, 0x35, 0x00, 0x35,
 	}
+
 	assert.True(t, shared.IsMulticast(v4multicast))
 
 	var summary string = shared.PacketSummary(v4multicast)
@@ -212,6 +219,7 @@ func TestIsMulticastAndSummary(t *testing.T) {
 		198, 51, 100, 9,
 		0x00, 0x50, 0x01, 0xbb,
 	}
+
 	assert.False(t, shared.IsMulticast(v4unicast))
 	assert.NotEmpty(t, shared.PacketSummary(v4unicast))
 }

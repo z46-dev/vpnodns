@@ -1,3 +1,5 @@
+//go:build linux
+
 package tun
 
 import (
@@ -104,7 +106,7 @@ func DetectDefaultIface() (iface string, err error) {
 	}
 
 	fields = strings.Fields(string(out))
-	for i := 0; i < len(fields); i++ {
+	for i := range len(fields) {
 		if fields[i] == "dev" && i+1 < len(fields) {
 			iface = fields[i+1]
 			return
@@ -118,10 +120,9 @@ func DetectDefaultIface() (iface string, err error) {
 // SetupNAT enables IPv4 forwarding, adds MASQUERADE on the uplink, and allows forwarding between the TUN and uplink.
 func SetupNAT(uplink, inside string) (err error) {
 	var (
-		ctx        context.Context
-		cancel     context.CancelFunc
-		insideCIDR string
-		uplinkIP   string
+		ctx                  context.Context
+		cancel               context.CancelFunc
+		insideCIDR, uplinkIP string
 	)
 
 	if uplink == "" || inside == "" {
@@ -300,6 +301,7 @@ func EnforceRPFilterZeroUntil(iface string, stop <-chan struct{}, interval time.
 	go func() {
 		var t *time.Ticker = time.NewTicker(interval)
 		defer t.Stop()
+
 		var err error
 		for {
 			select {
@@ -333,7 +335,8 @@ func ensureRule(ctx context.Context, table string, rule []string) (err error) {
 		return
 	}
 
-	return run(ctx, "iptables", append([]string{"-t", table}, rule...)...)
+	err = run(ctx, "iptables", append([]string{"-t", table}, rule...)...)
+	return
 }
 
 // LogNATState prints a snapshot of forwarding and firewall state to aid debugging.
@@ -355,6 +358,7 @@ func LogNATState(logger *logger.Logger, uplink, inside string) {
 	if uplink != "" {
 		logSysctl(ctx, logger, "net.ipv4.conf."+uplink+".rp_filter")
 	}
+
 	if inside != "" {
 		logSysctl(ctx, logger, "net.ipv4.conf."+inside+".rp_filter")
 	}
@@ -388,8 +392,7 @@ func logCmdOutput(ctx context.Context, logger *logger.Logger, prefix, cmd string
 		err error
 	)
 
-	out, err = output(ctx, cmd, args...)
-	if err != nil {
+	if out, err = output(ctx, cmd, args...); err != nil {
 		logger.Errorf("%s error: %v\n", prefix, err)
 		return
 	}
@@ -512,6 +515,7 @@ func warnOverlappingSubnet(logger *logger.Logger, iface, cidr string) {
 	if logger == nil || cidr == "" {
 		return
 	}
+
 	var (
 		network *net.IPNet
 		err     error

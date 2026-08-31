@@ -6,33 +6,35 @@ import (
 	"fmt"
 )
 
-// CipherSuite represents a supported cipher suite for the lightweight handshake.
-type CipherSuite string
-
 const (
 	CipherSuiteCHACHA20POLY1305 CipherSuite = "TLS_CHACHA20_POLY1305_SHA256"
 	CipherSuiteAES256GCM        CipherSuite = "TLS_AES_256_GCM_SHA384"
 	CipherSuiteAES128GCM        CipherSuite = "TLS_AES_128_GCM_SHA256"
 )
 
-type ClientHello struct {
-	Username     string        `json:"username"`
-	Password     string        `json:"password"`
-	Nonce        []byte        `json:"nonce"`
-	CipherSuites []CipherSuite `json:"cipher_suites"`
-}
+type (
+	// CipherSuite represents a supported cipher suite for the lightweight handshake.
+	CipherSuite string
 
-type ServerHello struct {
-	Accepted          bool        `json:"accepted"`
-	SelectedCipher    CipherSuite `json:"selected_cipher"`
-	Nonce             []byte      `json:"nonce"`
-	RejectionReason   string      `json:"reason,omitempty"`
-	SupportsFragments bool        `json:"supports_fragments"`
-}
+	ClientHello struct {
+		Username     string        `json:"username"`
+		Password     string        `json:"password"`
+		Nonce        []byte        `json:"nonce"`
+		CipherSuites []CipherSuite `json:"cipher_suites"`
+	}
 
-type Finished struct {
-	Proof []byte `json:"proof"`
-}
+	ServerHello struct {
+		Accepted          bool        `json:"accepted"`
+		SelectedCipher    CipherSuite `json:"selected_cipher"`
+		Nonce             []byte      `json:"nonce"`
+		RejectionReason   string      `json:"reason,omitempty"`
+		SupportsFragments bool        `json:"supports_fragments"`
+	}
+
+	Finished struct {
+		Proof []byte `json:"proof"`
+	}
+)
 
 func NewClientHello(username, password string, suites []CipherSuite) (hello ClientHello, err error) {
 	var nonce []byte = make([]byte, 32)
@@ -48,6 +50,7 @@ func NewClientHello(username, password string, suites []CipherSuite) (hello Clie
 		Nonce:        nonce,
 		CipherSuites: suites,
 	}
+
 	return
 }
 
@@ -65,6 +68,7 @@ func (h ClientHello) ToMessage(sessionID, seq uint32) (msg Message, err error) {
 		Sequence:  seq,
 		Payload:   payload,
 	}
+
 	return
 }
 
@@ -76,7 +80,6 @@ func ParseClientHello(msg Message) (hello ClientHello, err error) {
 
 	if err = json.Unmarshal(msg.Payload, &hello); err != nil {
 		err = fmt.Errorf("decode client hello: %w", err)
-		return
 	}
 
 	return
@@ -96,6 +99,7 @@ func (h ServerHello) ToMessage(sessionID, seq uint32) (msg Message, err error) {
 		Sequence:  seq,
 		Payload:   payload,
 	}
+
 	return
 }
 
@@ -107,7 +111,6 @@ func ParseServerHello(msg Message) (hello ServerHello, err error) {
 
 	if err = json.Unmarshal(msg.Payload, &hello); err != nil {
 		err = fmt.Errorf("decode server hello: %w", err)
-		return
 	}
 
 	return
@@ -127,6 +130,7 @@ func (f Finished) ToMessage(sessionID, seq uint32) (msg Message, err error) {
 		Sequence:  seq,
 		Payload:   payload,
 	}
+
 	return
 }
 
@@ -138,7 +142,6 @@ func ParseFinished(msg Message) (finished Finished, err error) {
 
 	if err = json.Unmarshal(msg.Payload, &finished); err != nil {
 		err = fmt.Errorf("decode finished: %w", err)
-		return
 	}
 
 	return

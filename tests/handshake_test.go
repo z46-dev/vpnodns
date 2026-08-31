@@ -9,13 +9,16 @@ import (
 )
 
 func TestClientHelloRoundTrip(t *testing.T) {
-	var hello shared.ClientHello
-	var err error
+	var (
+		hello shared.ClientHello
+		err   error
+	)
 
 	hello, err = shared.NewClientHello("user", "pass", []shared.CipherSuite{
 		shared.CipherSuiteCHACHA20POLY1305,
 		shared.CipherSuiteAES256GCM,
 	})
+
 	assert.NoError(t, err)
 
 	var msg shared.Message
@@ -59,9 +62,10 @@ func TestServerHelloRoundTrip(t *testing.T) {
 }
 
 func TestFinishedRoundTrip(t *testing.T) {
-	var finished shared.Finished = shared.Finished{Proof: []byte("proof-bytes")}
-
 	var (
+		finished shared.Finished = shared.Finished{
+			Proof: []byte("proof-bytes"),
+		}
 		msg shared.Message
 		err error
 	)
@@ -77,14 +81,13 @@ func TestFinishedRoundTrip(t *testing.T) {
 }
 
 func TestHandshakeTypeValidation(t *testing.T) {
-	var wrong shared.Message = shared.Message{
-		Type:      shared.MessageTypeClientPoll,
-		SessionID: 1,
-		Sequence:  1,
-		Payload:   []byte("{}"),
-	}
-
 	var (
+		wrong shared.Message = shared.Message{
+			Type:      shared.MessageTypeClientPoll,
+			SessionID: 1,
+			Sequence:  1,
+			Payload:   []byte("{}"),
+		}
 		_   shared.ClientHello
 		err error
 	)
