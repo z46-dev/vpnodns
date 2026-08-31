@@ -57,6 +57,7 @@ func NewClientHello(username, password string, suites []CipherSuite) (hello Clie
 func (h ClientHello) ToMessage(sessionID, seq uint32) (msg Message, err error) {
 	var payload []byte
 
+	// #nosec G117 -- Password is an intentional field in the current wire protocol.
 	if payload, err = json.Marshal(h); err != nil {
 		err = fmt.Errorf("encode client hello: %w", err)
 		return

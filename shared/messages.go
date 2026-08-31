@@ -54,6 +54,7 @@ func (m Message) MarshalBinary() (buf []byte, err error) {
 	binary.BigEndian.PutUint32(buf[5:], m.Sequence)
 	binary.BigEndian.PutUint16(buf[9:], m.TotalParts)
 	binary.BigEndian.PutUint16(buf[11:], m.Part)
+	// #nosec G115 -- the MaxPayloadSize guard above proves the length fits uint16.
 	binary.BigEndian.PutUint16(buf[13:], uint16(len(m.Payload)))
 	copy(buf[messageHeaderSize:], m.Payload)
 

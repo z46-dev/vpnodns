@@ -144,7 +144,9 @@ func SplitMessageForQuery(msg Message, domain string) (fragments []Message, err 
 	fragments = make([]Message, 0, partCount)
 	for offset = 0; offset < len(msg.Payload); offset += maxChunk {
 		var part Message = msg
+		// #nosec G115 -- partCount is bounded by maxParts (MaxUint16) above.
 		part.TotalParts = uint16(partCount)
+		// #nosec G115 -- len(fragments) is always less than the bounded partCount.
 		part.Part = uint16(len(fragments))
 		part.Payload = append([]byte(nil), msg.Payload[offset:min(offset+maxChunk, len(msg.Payload))]...)
 		fragments = append(fragments, part)
@@ -154,6 +156,12 @@ func SplitMessageForQuery(msg Message, domain string) (fragments []Message, err 
 }
 
 func maxQueryPayload(domain string) (max int) {
+	domain = normalizeDomain(domain)
+	var err error
+	if _, _, err = domainLabelInfo(domain); err != nil {
+		return
+	}
+
 	var low, high, mid int = 0, MaxPayloadSize, 0
 
 	for low < high {

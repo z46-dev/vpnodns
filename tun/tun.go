@@ -18,9 +18,7 @@ func Open(name string) (iface *Interface, err error) {
 	}
 
 	if name != "" {
-		config.PlatformSpecificParams = water.PlatformSpecificParams{
-			Name: name,
-		}
+		configureName(&config, name)
 	}
 
 	iface = &Interface{}

@@ -157,7 +157,9 @@ func waitForSignal(cancel context.CancelFunc) {
 func randomUint32() (value uint32) {
 	var b [4]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		value = uint32(time.Now().UnixNano())
+		var fallback [8]byte
+		binary.BigEndian.PutUint64(fallback[:], uint64(time.Now().UnixNano()))
+		value = binary.BigEndian.Uint32(fallback[4:])
 		return
 	}
 
@@ -287,7 +289,7 @@ func pollServer(ctx context.Context, tunIf *tun.Interface, dnsClient *dns.Client
 			resp shared.Message
 			err  error
 		)
-		
+
 		if resp, err = sendMessage(ctx, dnsClient, serverAddr, domain, msg, shared.MessageTypeServerData, shared.MessageTypeServerAck); err != nil {
 			log.Warningf("client poll seq=%d err: %v\n", seq, err)
 			continue

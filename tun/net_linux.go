@@ -79,6 +79,7 @@ func run(ctx context.Context, cmd string, args ...string) (err error) {
 		out []byte
 	)
 
+	// #nosec G204 -- callers select fixed administrative commands; arguments are not shell-expanded.
 	c = exec.CommandContext(ctx, cmd, args...)
 	if out, err = c.CombinedOutput(); err != nil {
 		err = fmt.Errorf("%s %v: %v (%s)", cmd, args, err, strings.TrimSpace(string(out)))
@@ -318,6 +319,7 @@ func EnforceRPFilterZeroUntil(iface string, stop <-chan struct{}, interval time.
 			}
 
 			var val []byte
+			// #nosec G304 -- iface is used under the fixed procfs rp_filter hierarchy.
 			if val, err = os.ReadFile("/proc/sys/net/ipv4/conf/" + iface + "/rp_filter"); err == nil && strings.TrimSpace(string(val)) != "0" {
 				log.Warningf("rp_filter for %s flipped back to %s; reasserting\n", iface, strings.TrimSpace(string(val)))
 				if err = setRPFilter(iface, 0); err != nil {
@@ -331,6 +333,7 @@ func EnforceRPFilterZeroUntil(iface string, stop <-chan struct{}, interval time.
 // ensureRule checks if an iptables rule exists, and adds it if not.
 // It returns an error if the check or addition fails.
 func ensureRule(ctx context.Context, table string, rule []string) (err error) {
+	// #nosec G204 -- iptables is fixed and exec passes arguments without shell expansion.
 	if err = exec.CommandContext(ctx, "iptables", append([]string{"-t", table, "-C"}, rule[1:]...)...).Run(); err == nil {
 		return
 	}
@@ -408,6 +411,7 @@ func output(ctx context.Context, cmd string, args ...string) (out string, err er
 		b []byte
 	)
 
+	// #nosec G204 -- callers select fixed diagnostic commands; arguments are not shell-expanded.
 	c = exec.CommandContext(ctx, cmd, args...)
 	b, err = c.CombinedOutput()
 	out = string(b)
@@ -430,13 +434,15 @@ func setRPFilter(iface string, value int) (err error) {
 	)
 
 	for range attempts {
-		if err = os.WriteFile(target, []byte(want), 0644); err != nil {
+		// #nosec G304 -- iface is used under the fixed procfs rp_filter hierarchy.
+		if err = os.WriteFile(target, []byte(want), 0600); err != nil {
 			lastErr = err
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
 
 		var buf []byte
+		// #nosec G304 -- target is the same fixed procfs rp_filter path written above.
 		if buf, err = os.ReadFile(target); err != nil {
 			lastErr = err
 			time.Sleep(50 * time.Millisecond)
@@ -467,6 +473,7 @@ func ifaceIPv4CIDR(ctx context.Context, iface string) (cidr string, err error) {
 		return
 	}
 
+	// #nosec G204 -- ip is fixed and iface is passed as a non-shell argument.
 	if out, err = exec.CommandContext(ctx, "ip", "-o", "-4", "addr", "show", "dev", iface).Output(); err != nil {
 		return
 	}
@@ -491,6 +498,7 @@ func ifacePrimaryIPv4(ctx context.Context, iface string) (ip string, err error) 
 		return
 	}
 
+	// #nosec G204 -- ip is fixed and iface is passed as a non-shell argument.
 	if out, err = exec.CommandContext(ctx, "ip", "-o", "-4", "addr", "show", "dev", iface).Output(); err != nil {
 		return
 	}

@@ -33,4 +33,5 @@ go run ./client -server 10.255.37.136:53535
 - Improve performance with polling, some things can be sent back as in client data acks.
 - CI/CD for tests/builds
 - Installer script for Systemd service setup
+- Proper keepalive and connection management, including timeouts and retransmissions.
 - Abstraction to allow this to run over other protocols (e.g. DHCP, TFTP, Minecraft Protocol, etc)

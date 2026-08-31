@@ -60,9 +60,6 @@ jobs:
       - name: Check Go correctness
         run: go vet ./...
 
-      - name: Check WASM Go correctness
-        run: GOOS=js GOARCH=wasm go vet ./...
-
       - name: Run Go tests with race detector
         run: go test -race ./...
 

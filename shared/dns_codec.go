@@ -70,7 +70,8 @@ func DecodeQuery(req *dns.Msg, domain string) (msg Message, err error) {
 	var name string = strings.TrimSuffix(req.Question[0].Name, ".")
 
 	if domain = normalizeDomain(domain); domain != "" {
-		if !strings.EqualFold(name, domain) && !strings.HasSuffix(name, "."+domain) {
+		var lowerName, lowerDomain string = strings.ToLower(name), strings.ToLower(domain)
+		if lowerName != lowerDomain && !strings.HasSuffix(lowerName, "."+lowerDomain) {
 			err = fmt.Errorf("unexpected domain %q", name)
 			return
 		}
