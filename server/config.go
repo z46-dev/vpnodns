@@ -9,6 +9,7 @@ type (
 	routeFlag    []string
 	serverConfig struct {
 		listenAddr, domain, ifaceName, ifaceCIDR, natIface string
+		username, password                                 string
 		ifaceMTU                                           int
 		routes                                             []string
 	}
@@ -26,6 +27,8 @@ func parseServerConfig() (cfg serverConfig) {
 		ifaceCIDR  *string = flag.String("iface-cidr", "10.44.0.1/30", "CIDR to assign to server TUN interface")
 		ifaceMTU   *int    = flag.Int("iface-mtu", 1400, "MTU for the server TUN interface")
 		natIface   *string = flag.String("nat-iface", "", "Uplink interface to NAT client traffic through (default: auto-detect)")
+		username   *string = flag.String("username", "demo", "Username accepted during handshake")
+		password   *string = flag.String("password", "demo", "Password accepted during handshake")
 	)
 
 	flag.Var(&routeList, "route", "Route to add via the server TUN (repeatable, e.g. -route 10.0.0.0/24)")
@@ -38,6 +41,8 @@ func parseServerConfig() (cfg serverConfig) {
 		ifaceCIDR:  *ifaceCIDR,
 		ifaceMTU:   *ifaceMTU,
 		natIface:   *natIface,
+		username:   *username,
+		password:   *password,
 		routes:     routeList,
 	}
 

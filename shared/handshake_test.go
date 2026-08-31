@@ -18,6 +18,9 @@ func TestClientHelloRoundTrip(t *testing.T) {
 	hello, err = NewClientHello("user", "pass", []CipherSuite{CipherSuiteCHACHA20POLY1305, CipherSuiteAES256GCM})
 	require.NoError(t, err)
 	require.Len(t, hello.Nonce, 32)
+	assert.NotEmpty(t, hello.Proof)
+	assert.True(t, VerifyClientHello(hello, "user", "pass"))
+	assert.False(t, VerifyClientHello(hello, "user", "wrong"))
 
 	message, err = hello.ToMessage(1, 2)
 	require.NoError(t, err)

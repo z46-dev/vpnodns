@@ -1,9 +1,12 @@
 package shared
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"hash"
 )
 
 const (
@@ -18,8 +21,8 @@ type (
 
 	ClientHello struct {
 		Username     string        `json:"username"`
-		Password     string        `json:"password"`
 		Nonce        []byte        `json:"nonce"`
+		Proof        []byte        `json:"proof"`
 		CipherSuites []CipherSuite `json:"cipher_suites"`
 	}
 
@@ -46,18 +49,17 @@ func NewClientHello(username, password string, suites []CipherSuite) (hello Clie
 
 	hello = ClientHello{
 		Username:     username,
-		Password:     password,
 		Nonce:        nonce,
 		CipherSuites: suites,
 	}
 
+	hello.Proof = clientHelloProof(username, password, nonce)
 	return
 }
 
 func (h ClientHello) ToMessage(sessionID, seq uint32) (msg Message, err error) {
 	var payload []byte
 
-	// #nosec G117 -- Password is an intentional field in the current wire protocol.
 	if payload, err = json.Marshal(h); err != nil {
 		err = fmt.Errorf("encode client hello: %w", err)
 		return
@@ -70,6 +72,35 @@ func (h ClientHello) ToMessage(sessionID, seq uint32) (msg Message, err error) {
 		Payload:   payload,
 	}
 
+	return
+}
+
+// VerifyClientHello authenticates a client hello without transmitting the password.
+func VerifyClientHello(hello ClientHello, username, password string) (valid bool) {
+	if hello.Username != username || len(hello.Nonce) != 32 || len(hello.Proof) == 0 {
+		return
+	}
+
+	valid = hmac.Equal(hello.Proof, clientHelloProof(username, password, hello.Nonce))
+	return
+}
+
+// NewNonce creates a fresh nonce for handshake key material.
+func NewNonce() (nonce []byte, err error) {
+	nonce = make([]byte, 32)
+	if _, err = rand.Read(nonce); err != nil {
+		err = fmt.Errorf("generate nonce: %w", err)
+	}
+
+	return
+}
+
+func clientHelloProof(username, password string, nonce []byte) (proof []byte) {
+	var mac hash.Hash = hmac.New(sha256.New, []byte(password))
+	_, _ = mac.Write([]byte("vpnodns client hello\x00"))
+	_, _ = mac.Write([]byte(username))
+	_, _ = mac.Write(nonce)
+	proof = mac.Sum(nil)
 	return
 }
 

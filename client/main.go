@@ -71,35 +71,35 @@ func runClient(cfg clientConfig) (err error) {
 	}
 
 	var (
-		sessionID uint32 = randomUint32()
-		lastSeq   uint32
+		sessionID, lastSeq uint32 = randomUint32(), 0
+		sessionKey         []byte
 	)
 
-	if lastSeq, err = performHandshake(ctx, dnsClient, sessionID, cfg.domain, cfg.serverAddr, cfg.username, cfg.password); err != nil {
-		log.Warningf("handshake failed: %v\n", err)
+	if lastSeq, sessionKey, err = performHandshake(ctx, dnsClient, sessionID, cfg.domain, cfg.serverAddr, cfg.username, cfg.password); err != nil {
+		err = fmt.Errorf("handshake failed: %w", err)
+		return
 	}
 
 	var (
-		seq     uint32        = lastSeq
-		nextSeq func() uint32 = func() uint32 {
+		seq          uint32               = lastSeq
+		serverReplay *shared.ReplayWindow = new(shared.ReplayWindow)
+		nextSeq      func() uint32        = func() uint32 {
 			return atomic.AddUint32(&seq, 1)
 		}
 	)
 
-	go forwardClientTraffic(ctx, tunIf, dnsClient, cfg.serverAddr, cfg.domain, sessionID, nextSeq)
-	go pollServer(ctx, tunIf, dnsClient, cfg.serverAddr, cfg.domain, sessionID, nextSeq)
+	go forwardClientTraffic(ctx, tunIf, dnsClient, cfg.serverAddr, cfg.domain, sessionID, sessionKey, serverReplay, nextSeq)
+	go pollServer(ctx, tunIf, dnsClient, cfg.serverAddr, cfg.domain, sessionID, sessionKey, serverReplay, nextSeq)
 
 	<-ctx.Done()
 	log.Basicf("client shutting down\n")
 	return
 }
 
-func performHandshake(ctx context.Context, dnsClient *dns.Client, sessionID uint32, domain, serverAddr, username, password string) (seq uint32, err error) {
+func performHandshake(ctx context.Context, dnsClient *dns.Client, sessionID uint32, domain, serverAddr, username, password string) (seq uint32, sessionKey []byte, err error) {
 	var clientHello shared.ClientHello
 	if clientHello, err = shared.NewClientHello(username, password, []shared.CipherSuite{
-		shared.CipherSuiteCHACHA20POLY1305,
 		shared.CipherSuiteAES256GCM,
-		shared.CipherSuiteAES128GCM,
 	}); err != nil {
 		err = fmt.Errorf("build client hello: %w", err)
 		return
@@ -126,8 +126,22 @@ func performHandshake(ctx context.Context, dnsClient *dns.Client, sessionID uint
 		return
 	}
 
+	if hello.SelectedCipher != shared.CipherSuiteAES256GCM {
+		err = fmt.Errorf("server selected unsupported cipher %q", hello.SelectedCipher)
+		return
+	}
+
+	if sessionKey, err = shared.DeriveSessionKey(password, clientHello.Nonce, hello.Nonce); err != nil {
+		return
+	}
+
+	var proof []byte
+	if proof, err = shared.FinishedProof(sessionKey); err != nil {
+		return
+	}
+
 	var (
-		finished  shared.Finished = shared.Finished{Proof: []byte("client-finished")}
+		finished  shared.Finished = shared.Finished{Proof: proof}
 		finishMsg shared.Message
 	)
 
@@ -230,7 +244,7 @@ func ensureEDNS(m *dns.Msg, size uint16) {
 	m.SetEdns0(size, false)
 }
 
-func forwardClientTraffic(ctx context.Context, tunIf *tun.Interface, dnsClient *dns.Client, serverAddr, domain string, sessionID uint32, nextSeq func() uint32) {
+func forwardClientTraffic(ctx context.Context, tunIf *tun.Interface, dnsClient *dns.Client, serverAddr, domain string, sessionID uint32, sessionKey []byte, serverReplay *shared.ReplayWindow, nextSeq func() uint32) {
 	var buf []byte = make([]byte, 2000)
 
 	for {
@@ -258,9 +272,25 @@ func forwardClientTraffic(ctx context.Context, tunIf *tun.Interface, dnsClient *
 				Payload:   pkt,
 			}
 		)
+		
+		if msg, err = shared.SealMessage(sessionKey, msg); err != nil {
+			log.Warningf("client encrypt data seq=%d err: %v\n", seq, err)
+			continue
+		}
 
-		if _, err = sendMessage(ctx, dnsClient, serverAddr, domain, msg, shared.MessageTypeServerAck); err != nil {
+		var response shared.Message
+		if response, err = sendMessage(ctx, dnsClient, serverAddr, domain, msg, shared.MessageTypeServerAck); err != nil {
 			log.Warningf("client send data seq=%d err: %v\n", seq, err)
+			continue
+		}
+
+		if _, err = shared.OpenMessage(sessionKey, response); err != nil {
+			log.Warningf("client authenticate ack seq=%d err: %v\n", seq, err)
+			continue
+		}
+
+		if !serverReplay.Accept(response.Sequence) {
+			log.Warningf("client rejected replayed ack seq=%d\n", response.Sequence)
 			continue
 		}
 
@@ -268,7 +298,7 @@ func forwardClientTraffic(ctx context.Context, tunIf *tun.Interface, dnsClient *
 	}
 }
 
-func pollServer(ctx context.Context, tunIf *tun.Interface, dnsClient *dns.Client, serverAddr, domain string, sessionID uint32, nextSeq func() uint32) {
+func pollServer(ctx context.Context, tunIf *tun.Interface, dnsClient *dns.Client, serverAddr, domain string, sessionID uint32, sessionKey []byte, serverReplay *shared.ReplayWindow, nextSeq func() uint32) {
 	var ticker *time.Ticker = time.NewTicker(300 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -290,12 +320,33 @@ func pollServer(ctx context.Context, tunIf *tun.Interface, dnsClient *dns.Client
 			err  error
 		)
 
+		if msg, err = shared.SealMessage(sessionKey, msg); err != nil {
+			log.Warningf("client encrypt poll seq=%d err: %v\n", seq, err)
+			continue
+		}
+
 		if resp, err = sendMessage(ctx, dnsClient, serverAddr, domain, msg, shared.MessageTypeServerData, shared.MessageTypeServerAck); err != nil {
 			log.Warningf("client poll seq=%d err: %v\n", seq, err)
 			continue
 		}
 
 		if resp.Type != shared.MessageTypeServerData || len(resp.Payload) == 0 {
+			if _, err = shared.OpenMessage(sessionKey, resp); err != nil {
+				log.Warningf("client authenticate poll ack seq=%d err: %v\n", seq, err)
+			} else if !serverReplay.Accept(resp.Sequence) {
+				log.Warningf("client rejected replayed poll ack seq=%d\n", resp.Sequence)
+			}
+
+			continue
+		}
+
+		if resp, err = shared.OpenMessage(sessionKey, resp); err != nil {
+			log.Warningf("client decrypt poll response seq=%d err: %v\n", seq, err)
+			continue
+		}
+
+		if !serverReplay.Accept(resp.Sequence) {
+			log.Warningf("client rejected replayed response seq=%d\n", resp.Sequence)
 			continue
 		}
 

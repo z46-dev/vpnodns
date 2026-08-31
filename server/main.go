@@ -92,12 +92,13 @@ func runServer(cfg serverConfig) (err error) {
 
 	var (
 		assembler *shared.Reassembler = shared.NewReassembler()
+		sessions  *authSessions       = newAuthSessions()
 		mux       *dns.ServeMux       = dns.NewServeMux()
 	)
 
 	mux.HandleFunc(".", func(w dns.ResponseWriter, r *dns.Msg) {
 		var err error
-		if err = handleQuery(w, r, cfg.domain, assembler, tunIf, outbound); err != nil {
+		if err = handleQuery(w, r, cfg.domain, cfg.username, cfg.password, assembler, sessions, tunIf, outbound); err != nil {
 			log.Warningf("query error: %v\n", err)
 			dns.HandleFailed(w, r)
 		}
@@ -128,7 +129,7 @@ func runServer(cfg serverConfig) (err error) {
 	return
 }
 
-func handleQuery(w dns.ResponseWriter, r *dns.Msg, domain string, assembler *shared.Reassembler, tunIf *tun.Interface, outbound chan []byte) (err error) {
+func handleQuery(w dns.ResponseWriter, r *dns.Msg, domain, username, password string, assembler *shared.Reassembler, sessions *authSessions, tunIf *tun.Interface, outbound chan []byte) (err error) {
 	var msg shared.Message
 
 	if msg, err = shared.DecodeQuery(r, domain); err != nil {
@@ -170,12 +171,56 @@ func handleQuery(w dns.ResponseWriter, r *dns.Msg, domain string, assembler *sha
 		}
 
 		log.Basicf("client hello user=%s suites=%v\n", clientHello.Username, clientHello.CipherSuites)
+		if !shared.VerifyClientHello(clientHello, username, password) {
+			var rejection shared.Message
+			if rejection, err = (shared.ServerHello{RejectionReason: "invalid credentials"}).ToMessage(msg.SessionID, msg.Sequence+1); err != nil {
+				return
+			}
+
+			var response *dns.Msg
+			if response, err = shared.EncodeTXTResponse(rejection, r); err != nil {
+				return
+			}
+
+			setResponseEDNS(response, r)
+			err = w.WriteMsg(response)
+			return
+		}
+
+		var selectedCipher shared.CipherSuite = chooseCipher(clientHello.CipherSuites)
+		if selectedCipher == "" {
+			var rejection shared.Message
+			if rejection, err = (shared.ServerHello{RejectionReason: "no supported cipher"}).ToMessage(msg.SessionID, msg.Sequence+1); err != nil {
+				return
+			}
+
+			var response *dns.Msg
+			if response, err = shared.EncodeTXTResponse(rejection, r); err != nil {
+				return
+			}
+
+			setResponseEDNS(response, r)
+			err = w.WriteMsg(response)
+			return
+		}
+
+		var serverNonce []byte
+		if serverNonce, err = shared.NewNonce(); err != nil {
+			return
+		}
+
+		var sessionKey []byte
+		if sessionKey, err = shared.DeriveSessionKey(password, clientHello.Nonce, serverNonce); err != nil {
+			return
+		}
+
+		sessions.addPending(msg.SessionID, sessionKey)
 
 		var respMsg shared.Message
 		respMsg, err = shared.ServerHello{
 			Accepted:          true,
-			SelectedCipher:    chooseCipher(clientHello.CipherSuites),
-			Nonce:             []byte("server-nonce"),
+			SelectedCipher:    selectedCipher,
+			Nonce:             serverNonce,
 			SupportsFragments: true,
 		}.ToMessage(msg.SessionID, msg.Sequence+1)
 
@@ -193,6 +238,15 @@ func handleQuery(w dns.ResponseWriter, r *dns.Msg, domain string, assembler *sha
 		return
 
 	case shared.MessageTypeFinished:
+		var finished shared.Finished
+		if finished, err = shared.ParseFinished(msg); err != nil {
+			return
+		}
+		if !sessions.activate(msg.SessionID, finished.Proof) {
+			err = fmt.Errorf("invalid finished proof for session %d", msg.SessionID)
+			return
+		}
+
 		var (
 			respMsg shared.Message = shared.Message{Type: shared.MessageTypeServerAck, SessionID: msg.SessionID, Sequence: msg.Sequence + 1}
 			resp    *dns.Msg
@@ -207,8 +261,22 @@ func handleQuery(w dns.ResponseWriter, r *dns.Msg, domain string, assembler *sha
 		return
 
 	case shared.MessageTypeClientData:
+		var (
+			sessionKey    []byte
+			authenticated bool
+		)
+
+		if msg, err = sessions.open(msg); err != nil {
+			return
+		}
+
+		if sessionKey, authenticated = sessions.key(msg.SessionID); !authenticated {
+			err = fmt.Errorf("expired session %d", msg.SessionID)
+			return
+		}
+
 		if shared.IsMulticast(msg.Payload) {
-			err = writeAck(w, r, msg)
+			err = writeSecureAck(w, r, msg, sessionKey)
 			return
 		}
 
@@ -224,6 +292,10 @@ func handleQuery(w dns.ResponseWriter, r *dns.Msg, domain string, assembler *sha
 			resp    *dns.Msg
 		)
 
+		if respMsg, err = shared.SealMessage(sessionKey, respMsg); err != nil {
+			return
+		}
+
 		if resp, err = shared.EncodeTXTResponse(respMsg, r); err != nil {
 			return
 		}
@@ -233,15 +305,29 @@ func handleQuery(w dns.ResponseWriter, r *dns.Msg, domain string, assembler *sha
 		return
 
 	case shared.MessageTypeClientPoll:
+		var (
+			sessionKey    []byte
+			authenticated bool
+		)
+
+		if msg, err = sessions.open(msg); err != nil {
+			return
+		}
+
+		if sessionKey, authenticated = sessions.key(msg.SessionID); !authenticated {
+			err = fmt.Errorf("expired session %d", msg.SessionID)
+			return
+		}
+
 		select {
 		case pkt := <-outbound:
 			if len(pkt) == 0 {
-				err = writeAck(w, r, msg)
+				err = writeSecureAck(w, r, msg, sessionKey)
 				return
 			}
 
 			if shared.IsMulticast(pkt) {
-				err = writeAck(w, r, msg)
+				err = writeSecureAck(w, r, msg, sessionKey)
 				return
 			}
 
@@ -252,7 +338,12 @@ func handleQuery(w dns.ResponseWriter, r *dns.Msg, domain string, assembler *sha
 				Payload:   pkt,
 			}
 
+			if respMsg, err = shared.SealMessage(sessionKey, respMsg); err != nil {
+				return
+			}
+
 			log.Basicf("server poll seq=%d -> tx %d bytes to client (%s)\n", msg.Sequence, len(pkt), shared.PacketSummary(pkt))
+
 			var resp *dns.Msg
 			if resp, err = shared.EncodeTXTResponse(respMsg, r); err != nil {
 				return
@@ -262,7 +353,7 @@ func handleQuery(w dns.ResponseWriter, r *dns.Msg, domain string, assembler *sha
 			err = w.WriteMsg(resp)
 			return
 		default:
-			err = writeAck(w, r, msg)
+			err = writeSecureAck(w, r, msg, sessionKey)
 			return
 		}
 
@@ -273,12 +364,13 @@ func handleQuery(w dns.ResponseWriter, r *dns.Msg, domain string, assembler *sha
 }
 
 func chooseCipher(suites []shared.CipherSuite) (suite shared.CipherSuite) {
-	if len(suites) == 0 {
-		suite = shared.CipherSuiteCHACHA20POLY1305
-		return
+	for _, candidate := range suites {
+		if candidate == shared.CipherSuiteAES256GCM {
+			suite = candidate
+			return
+		}
 	}
 
-	suite = suites[0]
 	return
 }
 
@@ -291,22 +383,20 @@ func waitForSignal(cancel context.CancelFunc) {
 	cancel()
 }
 
-func writeAck(w dns.ResponseWriter, req *dns.Msg, msg shared.Message) (err error) {
-	var (
-		respMsg shared.Message = shared.Message{
-			Type:      shared.MessageTypeServerAck,
-			SessionID: msg.SessionID,
-			Sequence:  msg.Sequence + 1,
-		}
-		resp *dns.Msg
-	)
-
-	if resp, err = shared.EncodeTXTResponse(respMsg, req); err != nil {
+// writeSecureAck returns an authenticated acknowledgement for an active session.
+func writeSecureAck(w dns.ResponseWriter, req *dns.Msg, msg shared.Message, key []byte) (err error) {
+	var responseMessage shared.Message = shared.Message{Type: shared.MessageTypeServerAck, SessionID: msg.SessionID, Sequence: msg.Sequence + 1}
+	if responseMessage, err = shared.SealMessage(key, responseMessage); err != nil {
 		return
 	}
 
-	setResponseEDNS(resp, req)
-	err = w.WriteMsg(resp)
+	var response *dns.Msg
+	if response, err = shared.EncodeTXTResponse(responseMessage, req); err != nil {
+		return
+	}
+
+	setResponseEDNS(response, req)
+	err = w.WriteMsg(response)
 	return
 }
 
