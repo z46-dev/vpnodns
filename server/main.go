@@ -19,8 +19,10 @@ import (
 var log *logger.Logger = logger.NewLogger().SetPrefix("[server]", logger.BoldGreen).IncludeTimestamp()
 
 func main() {
-	var cfg serverConfig = parseServerConfig()
-	var err error
+	var (
+		cfg serverConfig = parseServerConfig()
+		err error
+	)
 
 	if err = runServer(cfg); err != nil {
 		log.Errorf("server error: %v\n", err)
@@ -40,19 +42,23 @@ func runServer(cfg serverConfig) (err error) {
 
 	var tunIf *tun.Interface
 	if tunIf, err = tun.Open(cfg.ifaceName); err != nil {
-		return fmt.Errorf("open TUN: %w", err)
+		err = fmt.Errorf("open TUN: %w", err)
+		return
 	}
+
 	defer tunIf.Close()
 
 	log.Statusf("server TUN ready: %s\n", tunIf.Name())
 	if err = tun.Setup(tunIf.Name(), cfg.ifaceCIDR, cfg.ifaceMTU, cfg.routes); err != nil {
-		return fmt.Errorf("configure TUN: %w", err)
+		err = fmt.Errorf("configure TUN: %w", err)
+		return
 	}
 
 	var uplink string = cfg.natIface
 	if uplink == "" {
 		if uplink, err = tun.DetectDefaultIface(); err != nil {
-			return fmt.Errorf("detect uplink: %w", err)
+			err = fmt.Errorf("detect uplink: %w", err)
+			return
 		}
 	}
 
@@ -60,6 +66,7 @@ func runServer(cfg serverConfig) (err error) {
 	if err = tun.DisableRPFilter(tunIf.Name()); err != nil {
 		log.Warningf("disable rp_filter on %s: %v\n", tunIf.Name(), err)
 	}
+
 	if err = tun.DisableRPFilter(uplink); err != nil {
 		log.Warningf("disable rp_filter on %s: %v\n", uplink, err)
 	}
@@ -68,20 +75,29 @@ func runServer(cfg serverConfig) (err error) {
 	tun.EnforceRPFilterZeroUntil(uplink, ctx.Done(), 250*time.Millisecond)
 
 	if err = tun.SetupNAT(uplink, tunIf.Name()); err != nil {
-		return fmt.Errorf("configure NAT on %s: %w", uplink, err)
+		err = fmt.Errorf("configure NAT on %s: %w", uplink, err)
+		return
 	}
+
 	tun.LogNATState(log, uplink, tunIf.Name())
 
-	var outbound chan []byte = make(chan []byte, 64)
-	var wg sync.WaitGroup
+	var (
+		outbound chan []byte = make(chan []byte, 64)
+		wg       sync.WaitGroup
+	)
+
 	wg.Go(func() {
 		queueServerTraffic(tunIf, outbound)
 	})
 
-	var assembler *shared.Reassembler = shared.NewReassembler()
-	var mux *dns.ServeMux = dns.NewServeMux()
+	var (
+		assembler *shared.Reassembler = shared.NewReassembler()
+		mux       *dns.ServeMux       = dns.NewServeMux()
+	)
+
 	mux.HandleFunc(".", func(w dns.ResponseWriter, r *dns.Msg) {
-		if err := handleQuery(w, r, cfg.domain, assembler, tunIf, outbound); err != nil {
+		var err error
+		if err = handleQuery(w, r, cfg.domain, assembler, tunIf, outbound); err != nil {
 			log.Warningf("query error: %v\n", err)
 			dns.HandleFailed(w, r)
 		}
@@ -98,7 +114,8 @@ func runServer(cfg serverConfig) (err error) {
 
 	go func() {
 		log.Statusf("DNS server listening on %s for %s\n", cfg.listenAddr, cfg.domain)
-		if err := server.ListenAndServe(); err != nil {
+		var err error
+		if err = server.ListenAndServe(); err != nil {
 			log.Errorf("serve DNS: %v\n", err)
 			cancel()
 		}
@@ -124,17 +141,21 @@ func handleQuery(w dns.ResponseWriter, r *dns.Msg, domain string, assembler *sha
 	}
 
 	if !complete {
-		var ack shared.Message = shared.Message{
-			Type:       shared.MessageTypeServerAck,
-			SessionID:  msg.SessionID,
-			Sequence:   msg.Sequence,
-			TotalParts: msg.TotalParts,
-			Part:       msg.Part,
-		}
-		var resp *dns.Msg
+		var (
+			ack shared.Message = shared.Message{
+				Type:       shared.MessageTypeServerAck,
+				SessionID:  msg.SessionID,
+				Sequence:   msg.Sequence,
+				TotalParts: msg.TotalParts,
+				Part:       msg.Part,
+			}
+			resp *dns.Msg
+		)
+
 		if resp, err = shared.EncodeTXTResponse(ack, r); err != nil {
 			return
 		}
+
 		setResponseEDNS(resp, r)
 		err = w.WriteMsg(resp)
 		return
@@ -172,8 +193,10 @@ func handleQuery(w dns.ResponseWriter, r *dns.Msg, domain string, assembler *sha
 		return
 
 	case shared.MessageTypeFinished:
-		var respMsg shared.Message = shared.Message{Type: shared.MessageTypeServerAck, SessionID: msg.SessionID, Sequence: msg.Sequence + 1}
-		var resp *dns.Msg
+		var (
+			respMsg shared.Message = shared.Message{Type: shared.MessageTypeServerAck, SessionID: msg.SessionID, Sequence: msg.Sequence + 1}
+			resp    *dns.Msg
+		)
 
 		if resp, err = shared.EncodeTXTResponse(respMsg, r); err != nil {
 			return
@@ -188,14 +211,19 @@ func handleQuery(w dns.ResponseWriter, r *dns.Msg, domain string, assembler *sha
 			err = writeAck(w, r, msg)
 			return
 		}
+
 		if _, err = tunIf.Write(msg.Payload); err != nil {
 			err = fmt.Errorf("write tun: %w", err)
 			return
 		}
 
 		log.Basicf("server rx %d bytes (%s)\n", len(msg.Payload), shared.PacketSummary(msg.Payload))
-		var respMsg shared.Message = shared.Message{Type: shared.MessageTypeServerAck, SessionID: msg.SessionID, Sequence: msg.Sequence + 1}
-		var resp *dns.Msg
+
+		var (
+			respMsg shared.Message = shared.Message{Type: shared.MessageTypeServerAck, SessionID: msg.SessionID, Sequence: msg.Sequence + 1}
+			resp    *dns.Msg
+		)
+
 		if resp, err = shared.EncodeTXTResponse(respMsg, r); err != nil {
 			return
 		}
@@ -264,13 +292,15 @@ func waitForSignal(cancel context.CancelFunc) {
 }
 
 func writeAck(w dns.ResponseWriter, req *dns.Msg, msg shared.Message) (err error) {
-	var respMsg shared.Message = shared.Message{
-		Type:      shared.MessageTypeServerAck,
-		SessionID: msg.SessionID,
-		Sequence:  msg.Sequence + 1,
-	}
+	var (
+		respMsg shared.Message = shared.Message{
+			Type:      shared.MessageTypeServerAck,
+			SessionID: msg.SessionID,
+			Sequence:  msg.Sequence + 1,
+		}
+		resp *dns.Msg
+	)
 
-	var resp *dns.Msg
 	if resp, err = shared.EncodeTXTResponse(respMsg, req); err != nil {
 		return
 	}
