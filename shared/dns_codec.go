@@ -9,6 +9,10 @@ import (
 	"github.com/miekg/dns"
 )
 
+type dnsCacheEntry struct {
+	c, l int
+}
+
 const (
 	maxLabelLength   = 63
 	maxTXTLength     = 255
@@ -49,7 +53,7 @@ func EncodeQuery(msg Message, domain string) (encoded *dns.Msg, err error) {
 		return
 	}
 
-	encoded = new(dns.Msg)
+	encoded = &dns.Msg{}
 	encoded.SetQuestion(ensureTrailingDot(name), dns.TypeTXT)
 	return
 }
@@ -66,7 +70,8 @@ func DecodeQuery(req *dns.Msg, domain string) (msg Message, err error) {
 	var name string = strings.TrimSuffix(req.Question[0].Name, ".")
 
 	if domain = normalizeDomain(domain); domain != "" {
-		if !strings.EqualFold(name, domain) && !strings.HasSuffix(name, "."+domain) {
+		var lowerName, lowerDomain string = strings.ToLower(name), strings.ToLower(domain)
+		if lowerName != lowerDomain && !strings.HasSuffix(lowerName, "."+lowerDomain) {
 			err = fmt.Errorf("unexpected domain %q", name)
 			return
 		}
@@ -83,8 +88,11 @@ func DecodeQuery(req *dns.Msg, domain string) (msg Message, err error) {
 		return
 	}
 
-	var raw string = strings.ReplaceAll(name, ".", "")
-	var wire []byte
+	var (
+		raw  string = strings.ReplaceAll(name, ".", "")
+		wire []byte
+	)
+
 	if wire, err = b32Encoder.DecodeString(raw); err != nil {
 		err = fmt.Errorf("decode base32: %w", err)
 		return
@@ -103,10 +111,9 @@ func EncodeTXTResponse(msg Message, req *dns.Msg) (encoded *dns.Msg, err error) 
 		return
 	}
 
-	var encodedStr string = b32Encoder.EncodeToString(wire)
-	var chunks []string = chunkString(encodedStr, maxTXTLength)
+	var chunks []string = chunkString(b32Encoder.EncodeToString(wire), maxTXTLength)
 
-	encoded = new(dns.Msg)
+	encoded = &dns.Msg{}
 	encoded.SetReply(req)
 	encoded.Authoritative = true
 	encoded.Answer = append(encoded.Answer, &dns.TXT{
@@ -168,6 +175,7 @@ func chunkString(s string, size int) (parts []string) {
 			parts = append(parts, s)
 			break
 		}
+
 		parts = append(parts, s[:size])
 		s = s[size:]
 	}
@@ -206,6 +214,7 @@ func wireNameLength(payloadLabels []string, domain string) (lenWritten int, err 
 			err = ErrNameTooLong
 			return
 		}
+
 		totalLabelBytes += len(l)
 	}
 
@@ -227,9 +236,8 @@ func domainLabelInfo(domain string) (count int, totalLen int, err error) {
 	)
 
 	if v, ok = domainLabelCache.Load(domain); ok {
-		var info = v.(struct{ c, l int })
-		count = info.c
-		totalLen = info.l
+		var info dnsCacheEntry = v.(dnsCacheEntry)
+		count, totalLen = info.c, info.l
 		return
 	}
 
@@ -239,10 +247,15 @@ func domainLabelInfo(domain string) (count int, totalLen int, err error) {
 			err = ErrNameTooLong
 			return
 		}
+
 		count++
 		totalLen += len(p)
 	}
 
-	domainLabelCache.Store(domain, struct{ c, l int }{count, totalLen})
+	domainLabelCache.Store(domain, dnsCacheEntry{
+		c: count,
+		l: totalLen,
+	})
+
 	return
 }

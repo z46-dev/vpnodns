@@ -5,33 +5,37 @@ import (
 	"sync"
 )
 
-const maxParts = int(^uint16(0)) // bitwise NOT of 0 for uint16
+const maxParts = MaxPayloadSize
 
-// assemblyKey uniquely identifies a fragmented message being reassembled.
-type assemblyKey struct {
-	sessionID uint32
-	sequence  uint32
-}
+type (
+	// assemblyKey uniquely identifies a fragmented message being reassembled.
+	assemblyKey struct {
+		sessionID uint32
+		sequence  uint32
+	}
 
-// assembly holds the state of a message being reassembled from fragments.
-type assembly struct {
-	total   uint16
-	msgType MessageType
-	parts   map[uint16][]byte
-	size    int
-}
+	// assembly holds the state of a message being reassembled from fragments.
+	assembly struct {
+		total   uint16
+		msgType MessageType
+		parts   map[uint16][]byte
+		size    int
+	}
 
-// Reassembler rebuilds messages that were split across multiple DNS queries.
-type Reassembler struct {
-	mu      sync.Mutex
-	pending map[assemblyKey]*assembly
-}
+	// Reassembler rebuilds messages that were split across multiple DNS queries.
+	Reassembler struct {
+		mu      sync.Mutex
+		pending map[assemblyKey]*assembly
+	}
+)
 
 // NewReassembler creates a new Reassembler instance.
-func NewReassembler() *Reassembler {
-	var r Reassembler
-	r.pending = make(map[assemblyKey]*assembly)
-	return &r
+func NewReassembler() (r *Reassembler) {
+	r = &Reassembler{
+		pending: make(map[assemblyKey]*assembly),
+	}
+
+	return r
 }
 
 // Add ingests a message fragment. When the full set of parts is available, it returns
@@ -68,6 +72,7 @@ func (r *Reassembler) Add(msg Message) (assembled Message, done bool, err error)
 			msgType: msg.Type,
 			parts:   make(map[uint16][]byte),
 		}
+
 		r.pending[key] = state
 	} else if state.total != msg.TotalParts || state.msgType != msg.Type {
 		delete(r.pending, key)
@@ -84,19 +89,14 @@ func (r *Reassembler) Add(msg Message) (assembled Message, done bool, err error)
 		return
 	}
 
-	var (
-		payload []byte
-		i       int
-		part    []byte
-	)
-
-	payload = make([]byte, 0, state.size)
-	for i = 0; i < int(state.total); i++ {
+	var payload, part []byte = make([]byte, 0, state.size), nil
+	for i := range state.total {
 		if part, ok = state.parts[uint16(i)]; !ok {
 			delete(r.pending, key)
 			err = ErrIncompletePayload
 			return
 		}
+
 		payload = append(payload, part...)
 	}
 
@@ -109,6 +109,7 @@ func (r *Reassembler) Add(msg Message) (assembled Message, done bool, err error)
 		Part:       0,
 		Payload:    payload,
 	}
+
 	done = true
 	return
 }
@@ -121,14 +122,8 @@ func MaxQueryPayload(domain string) (max int) {
 
 // SplitMessageForQuery divides a message into fragments that each fit within DNS name limits.
 func SplitMessageForQuery(msg Message, domain string) (fragments []Message, err error) {
-	var (
-		maxChunk  int
-		partCount int
-		offset    int
-		end       int
-	)
+	var maxChunk, partCount, offset int = maxQueryPayload(domain), 0, 0
 
-	maxChunk = maxQueryPayload(domain)
 	if maxChunk <= 0 {
 		err = fmt.Errorf("domain %q leaves no room for payload", domain)
 		return
@@ -141,33 +136,33 @@ func SplitMessageForQuery(msg Message, domain string) (fragments []Message, err 
 		return
 	}
 
-	partCount = (len(msg.Payload) + maxChunk - 1) / maxChunk
-	if partCount > maxParts {
+	if partCount = (len(msg.Payload) + maxChunk - 1) / maxChunk; partCount > maxParts {
 		err = fmt.Errorf("message requires too many parts: %d", partCount)
 		return
 	}
 
 	fragments = make([]Message, 0, partCount)
 	for offset = 0; offset < len(msg.Payload); offset += maxChunk {
-		end = offset + maxChunk
-		if end > len(msg.Payload) {
-			end = len(msg.Payload)
-		}
 		var part Message = msg
+		// #nosec G115 -- partCount is bounded by maxParts (MaxUint16) above.
 		part.TotalParts = uint16(partCount)
+		// #nosec G115 -- len(fragments) is always less than the bounded partCount.
 		part.Part = uint16(len(fragments))
-		part.Payload = append([]byte(nil), msg.Payload[offset:end]...)
+		part.Payload = append([]byte(nil), msg.Payload[offset:min(offset+maxChunk, len(msg.Payload))]...)
 		fragments = append(fragments, part)
 	}
+
 	return
 }
 
 func maxQueryPayload(domain string) (max int) {
-	var (
-		low  int = 0
-		high int = MaxPayloadSize
-		mid  int
-	)
+	domain = normalizeDomain(domain)
+	var err error
+	if _, _, err = domainLabelInfo(domain); err != nil {
+		return
+	}
+
+	var low, high, mid int = 0, MaxPayloadSize, 0
 
 	for low < high {
 		mid = (low + high + 1) / 2
@@ -183,13 +178,7 @@ func maxQueryPayload(domain string) (max int) {
 }
 
 func encodedWireLength(payloadLen int, domain string) (wireLen int) {
-	var (
-		wireBytes     int
-		encodedLen    int
-		payloadLabels int
-		domainLabels  int
-		domainLen     int
-	)
+	var wireBytes, encodedLen, payloadLabels, domainLabels, domainLen int
 
 	wireBytes = messageHeaderSize + payloadLen
 	encodedLen = b32Encoder.EncodedLen(wireBytes)
