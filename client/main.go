@@ -23,8 +23,10 @@ import (
 var log *logger.Logger = logger.NewLogger().SetPrefix("[client]", logger.BoldBlue).IncludeTimestamp()
 
 func main() {
-	var cfg clientConfig = parseClientConfig()
-	var err error
+	var (
+		cfg clientConfig = parseClientConfig()
+		err error
+	)
 
 	if err = runClient(cfg); err != nil {
 		log.Errorf("client error: %v\n", err)
@@ -42,38 +44,47 @@ func runClient(cfg clientConfig) (err error) {
 	defer cancel()
 	go waitForSignal(cancel)
 
-	var dnsClient *dns.Client = &dns.Client{
-		Net:          "udp",
-		UDPSize:      4096,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 5 * time.Second,
-		Dialer: &net.Dialer{
-			Timeout: 5 * time.Second,
-		},
-	}
+	var (
+		dnsClient *dns.Client = &dns.Client{
+			Net:          "udp",
+			UDPSize:      4096,
+			ReadTimeout:  5 * time.Second,
+			WriteTimeout: 5 * time.Second,
+			Dialer: &net.Dialer{
+				Timeout: 5 * time.Second,
+			},
+		}
+		tunIf *tun.Interface
+	)
 
-	var tunIf *tun.Interface
 	if tunIf, err = tun.Open(cfg.ifaceName); err != nil {
-		return fmt.Errorf("open TUN: %w", err)
+		err = fmt.Errorf("open TUN: %w", err)
+		return
 	}
 
 	defer tunIf.Close()
 	log.Statusf("client TUN ready: %s\n", tunIf.Name())
 
 	if err = tun.Setup(tunIf.Name(), cfg.ifaceCIDR, cfg.ifaceMTU, cfg.routes); err != nil {
-		return fmt.Errorf("configure TUN: %w", err)
+		err = fmt.Errorf("configure TUN: %w", err)
+		return
 	}
 
-	var sessionID uint32 = randomUint32()
-	var lastSeq uint32
+	var (
+		sessionID uint32 = randomUint32()
+		lastSeq   uint32
+	)
+
 	if lastSeq, err = performHandshake(ctx, dnsClient, sessionID, cfg.domain, cfg.serverAddr, cfg.username, cfg.password); err != nil {
 		log.Warningf("handshake failed: %v\n", err)
 	}
 
-	var seq uint32 = lastSeq
-	var nextSeq func() uint32 = func() uint32 {
-		return atomic.AddUint32(&seq, 1)
-	}
+	var (
+		seq     uint32        = lastSeq
+		nextSeq func() uint32 = func() uint32 {
+			return atomic.AddUint32(&seq, 1)
+		}
+	)
 
 	go forwardClientTraffic(ctx, tunIf, dnsClient, cfg.serverAddr, cfg.domain, sessionID, nextSeq)
 	go pollServer(ctx, tunIf, dnsClient, cfg.serverAddr, cfg.domain, sessionID, nextSeq)
@@ -115,8 +126,11 @@ func performHandshake(ctx context.Context, dnsClient *dns.Client, sessionID uint
 		return
 	}
 
-	var finished shared.Finished = shared.Finished{Proof: []byte("client-finished")}
-	var finishMsg shared.Message
+	var (
+		finished  shared.Finished = shared.Finished{Proof: []byte("client-finished")}
+		finishMsg shared.Message
+	)
+
 	if finishMsg, err = finished.ToMessage(sessionID, 2); err != nil {
 		err = fmt.Errorf("encode finished: %w", err)
 		return
@@ -146,6 +160,7 @@ func randomUint32() (value uint32) {
 		value = uint32(time.Now().UnixNano())
 		return
 	}
+
 	value = binary.BigEndian.Uint32(b[:])
 	return
 }
@@ -178,6 +193,7 @@ func sendMessage(ctx context.Context, dnsClient *dns.Client, serverAddr, domain 
 				err = fmt.Errorf("expected ack for part %d, got %v", frag.Part, resp.Type)
 				return
 			}
+
 			continue
 		}
 	}
@@ -186,6 +202,7 @@ func sendMessage(ctx context.Context, dnsClient *dns.Client, serverAddr, domain 
 		err = fmt.Errorf("unexpected response type %v", resp.Type)
 		return
 	}
+
 	return
 }
 
@@ -199,10 +216,12 @@ func ensureEDNS(m *dns.Msg, size uint16) {
 		size = 4096
 	}
 
-	if opt := m.IsEdns0(); opt != nil {
+	var opt *dns.OPT
+	if opt = m.IsEdns0(); opt != nil {
 		if opt.UDPSize() < size {
 			opt.SetUDPSize(size)
 		}
+
 		return
 	}
 
@@ -211,14 +230,14 @@ func ensureEDNS(m *dns.Msg, size uint16) {
 
 func forwardClientTraffic(ctx context.Context, tunIf *tun.Interface, dnsClient *dns.Client, serverAddr, domain string, sessionID uint32, nextSeq func() uint32) {
 	var buf []byte = make([]byte, 2000)
+
 	for {
 		var (
 			n   int
 			err error
 		)
 
-		n, err = tunIf.Read(buf)
-		if err != nil {
+		if n, err = tunIf.Read(buf); err != nil {
 			log.Warningf("client tun read error: %v\n", err)
 			return
 		}
@@ -228,13 +247,15 @@ func forwardClientTraffic(ctx context.Context, tunIf *tun.Interface, dnsClient *
 			continue
 		}
 
-		var seq uint32 = nextSeq()
-		var msg shared.Message = shared.Message{
-			Type:      shared.MessageTypeClientData,
-			SessionID: sessionID,
-			Sequence:  seq,
-			Payload:   pkt,
-		}
+		var (
+			seq uint32         = nextSeq()
+			msg shared.Message = shared.Message{
+				Type:      shared.MessageTypeClientData,
+				SessionID: sessionID,
+				Sequence:  seq,
+				Payload:   pkt,
+			}
+		)
 
 		if _, err = sendMessage(ctx, dnsClient, serverAddr, domain, msg, shared.MessageTypeServerAck); err != nil {
 			log.Warningf("client send data seq=%d err: %v\n", seq, err)
@@ -256,15 +277,17 @@ func pollServer(ctx context.Context, tunIf *tun.Interface, dnsClient *dns.Client
 		case <-ticker.C:
 		}
 
-		var seq uint32 = nextSeq()
-		var msg shared.Message = shared.Message{
-			Type:      shared.MessageTypeClientPoll,
-			SessionID: sessionID,
-			Sequence:  seq,
-		}
-
-		var resp shared.Message
-		var err error
+		var (
+			seq uint32         = nextSeq()
+			msg shared.Message = shared.Message{
+				Type:      shared.MessageTypeClientPoll,
+				SessionID: sessionID,
+				Sequence:  seq,
+			}
+			resp shared.Message
+			err  error
+		)
+		
 		if resp, err = sendMessage(ctx, dnsClient, serverAddr, domain, msg, shared.MessageTypeServerData, shared.MessageTypeServerAck); err != nil {
 			log.Warningf("client poll seq=%d err: %v\n", seq, err)
 			continue

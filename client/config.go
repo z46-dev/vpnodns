@@ -5,16 +5,19 @@ import (
 	"strings"
 )
 
-type clientConfig struct {
-	serverAddr string
-	domain     string
-	ifaceName  string
-	ifaceCIDR  string
-	ifaceMTU   int
-	routes     []string
-	username   string
-	password   string
-}
+type (
+	routeFlag    []string
+	clientConfig struct {
+		serverAddr string
+		domain     string
+		ifaceName  string
+		ifaceCIDR  string
+		ifaceMTU   int
+		routes     []string
+		username   string
+		password   string
+	}
+)
 
 func parseClientConfig() (cfg clientConfig) {
 	var (
@@ -48,17 +51,16 @@ func parseClientConfig() (cfg clientConfig) {
 	return
 }
 
-type routeFlag []string
-
-func (r *routeFlag) String() string {
-	return strings.Join(*r, ",")
+func (r *routeFlag) String() (result string) {
+	result = strings.Join(*r, ",")
+	return
 }
 
-func (r *routeFlag) Set(val string) error {
+func (r *routeFlag) Set(val string) (err error) {
 	var cleaned string = strings.TrimSpace(val)
-	if cleaned == "" {
-		return nil
+	if cleaned != "" {
+		*r = append(*r, cleaned)
 	}
-	*r = append(*r, cleaned)
-	return nil
+
+	return
 }
