@@ -272,7 +272,7 @@ func forwardClientTraffic(ctx context.Context, tunIf *tun.Interface, dnsClient *
 				Payload:   pkt,
 			}
 		)
-		
+
 		if msg, err = shared.SealMessage(sessionKey, msg); err != nil {
 			log.Warningf("client encrypt data seq=%d err: %v\n", seq, err)
 			continue
